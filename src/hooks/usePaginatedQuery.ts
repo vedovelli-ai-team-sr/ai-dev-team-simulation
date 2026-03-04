@@ -98,9 +98,13 @@ export function usePaginatedQuery<TData>({
 
   const data = response?.data ?? []
   const total = response?.total ?? 0
-  const pageCount = Math.ceil(total / pageSize)
+  const pageCount = total > 0 ? Math.ceil(total / pageSize) : 0
 
   const gotoPage = useCallback((newPageIndex: number) => {
+    if (pageCount === 0) {
+      setPageIndex(0)
+      return
+    }
     setPageIndex(Math.max(0, Math.min(newPageIndex, pageCount - 1)))
   }, [pageCount])
 
@@ -109,7 +113,7 @@ export function usePaginatedQuery<TData>({
   }, [])
 
   const nextPage = useCallback(() => {
-    setPageIndex((prev) => Math.min(pageCount - 1, prev + 1))
+    setPageIndex((prev) => (pageCount > 0 ? Math.min(pageCount - 1, prev + 1) : prev))
   }, [pageCount])
 
   const handleSetPageSize = useCallback((newPageSize: number) => {
@@ -128,7 +132,7 @@ export function usePaginatedQuery<TData>({
     isError,
     error: error as Error | null,
     canPreviousPage: pageIndex > 0,
-    canNextPage: pageIndex < pageCount - 1,
+    canNextPage: pageCount > 0 && pageIndex < pageCount - 1,
     gotoPage,
     previousPage,
     nextPage,
