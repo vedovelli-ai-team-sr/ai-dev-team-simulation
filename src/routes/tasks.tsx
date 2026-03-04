@@ -4,6 +4,7 @@ import { useQuery } from '@tanstack/react-query'
 import { TaskTable } from '../components/TaskTable'
 import { AdvancedTableFilters } from '../components/AdvancedTableFilters'
 import { useTableFilters } from '../hooks/useTableFilters'
+import { RouteErrorBoundary } from '../components/RouteErrorBoundary'
 import type { Task } from '../types/task'
 
 async function fetchTasks(filters: {
@@ -64,7 +65,7 @@ function TasksRoute() {
     hasActiveFilters,
   } = useTableFilters()
 
-  const { data: tasks = [], isLoading } = useQuery({
+  const { data: tasks = [], isLoading, error } = useQuery({
     queryKey: [
       'tasks',
       status,
@@ -90,6 +91,15 @@ function TasksRoute() {
         sortOrder: sorting[0]?.desc ? 'desc' : 'asc',
       }),
   })
+
+  if (error) {
+    return (
+      <RouteErrorBoundary
+        error={error}
+        resetError={() => window.location.reload()}
+      />
+    )
+  }
 
   // Extract unique values for dropdown filters
   const uniqueTeams = useMemo(
@@ -255,4 +265,7 @@ function TasksRoute() {
 
 export const Route = createFileRoute('/tasks')({
   component: TasksRoute,
+  errorComponent: ({ error }) => (
+    <RouteErrorBoundary error={error} />
+  ),
 })

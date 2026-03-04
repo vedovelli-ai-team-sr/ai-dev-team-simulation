@@ -1,9 +1,10 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { useAgents } from '../../hooks/useAgents'
 import { AgentCard } from '../../components/AgentCard'
+import { RouteErrorBoundary } from '../../components/RouteErrorBoundary'
 
 /* eslint-disable react-refresh/only-export-components */
-function AgentsDashboard() {
+function AgentsDashboard(): JSX.Element {
   const { data: response, isLoading, error } = useAgents()
   const agents = response?.data ?? []
 
@@ -20,12 +21,10 @@ function AgentsDashboard() {
 
   if (error) {
     return (
-      <div className="p-8">
-        <h1 className="text-3xl font-bold mb-8">Agent Dashboard</h1>
-        <div className="p-6 bg-red-50 border border-red-200 rounded-lg text-red-700">
-          Error loading agents: {error.message}
-        </div>
-      </div>
+      <RouteErrorBoundary
+        error={error}
+        resetError={() => window.location.reload()}
+      />
     )
   }
 
@@ -60,4 +59,7 @@ function AgentsDashboard() {
 
 export const Route = createFileRoute('/agents/')({
   component: AgentsDashboard,
+  errorComponent: ({ error }) => (
+    <RouteErrorBoundary error={error} />
+  ),
 })

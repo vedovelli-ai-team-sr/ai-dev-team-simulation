@@ -1,20 +1,46 @@
 import { createFileRoute, useRouter } from '@tanstack/react-router'
 import { useQuery } from '@tanstack/react-query'
+import { RouteErrorBoundary } from '../components/RouteErrorBoundary'
 import type { Team } from '../hooks/useCreateTeam'
 
 export const Route = createFileRoute('/teams')({
   component: TeamsPage,
+  errorComponent: ({ error }) => (
+    <RouteErrorBoundary error={error} />
+  ),
 })
 
-function TeamsPage() {
+function TeamsPage(): JSX.Element {
   const router = useRouter()
-  const { data: teams = [] } = useQuery({
+  const { data: teams = [], isLoading, error } = useQuery({
     queryKey: ['teams'],
     queryFn: async () => {
       const response = await fetch('/api/teams')
       return response.json() as Promise<Team[]>
     },
   })
+
+  if (error) {
+    return (
+      <RouteErrorBoundary
+        error={error}
+        resetError={() => window.location.reload()}
+      />
+    )
+  }
+
+  if (isLoading) {
+    return (
+      <main className="min-h-screen bg-slate-900 text-white p-8">
+        <div className="max-w-4xl mx-auto">
+          <h1 className="text-3xl font-bold mb-8">Teams</h1>
+          <div className="flex items-center justify-center py-16">
+            <p className="text-slate-400">Loading teams...</p>
+          </div>
+        </div>
+      </main>
+    )
+  }
 
   return (
     <main className="min-h-screen bg-slate-900 text-white p-8">

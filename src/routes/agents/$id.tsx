@@ -2,10 +2,14 @@ import { createFileRoute, Link, useNavigate } from '@tanstack/react-router'
 import { Suspense } from 'react'
 import { useAgentHistory } from '../../hooks/useAgentHistory'
 import { AgentIdParamSchema } from '../../lib/router-types'
+import { RouteErrorBoundary } from '../../components/RouteErrorBoundary'
 
 export const Route = createFileRoute('/agents/$id')({
   validateSearch: (search) => AgentIdParamSchema.parse(search),
   component: AgentDetailWrapper,
+  errorComponent: ({ error }) => (
+    <RouteErrorBoundary error={error} />
+  ),
 })
 
 function AgentDetailWrapper() {

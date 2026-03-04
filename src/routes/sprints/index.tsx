@@ -1,6 +1,7 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { TaskBoard } from './board'
 import { SprintsSearchParamSchema } from '../../lib/router-types'
+import { RouteErrorBoundary } from '../../components/RouteErrorBoundary'
 
 export const Route = createFileRoute('/sprints/')({
   component: TaskBoard,
@@ -12,4 +13,7 @@ export const Route = createFileRoute('/sprints/')({
       return {}
     }
   },
+  errorComponent: ({ error }) => (
+    <RouteErrorBoundary error={error} />
+  ),
 })
