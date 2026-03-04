@@ -12,6 +12,20 @@ import {
 } from '@tanstack/react-table'
 import { useRowSelection } from '../../hooks/useRowSelection'
 
+/**
+ * Extract a unique identifier for a column definition
+ * Prefers explicit id property, falls back to accessorKey
+ */
+function getColumnId(col: ColumnDef<any>): string | null {
+  if (typeof col.id === 'string') {
+    return col.id
+  }
+  if (typeof col.accessorKey === 'string') {
+    return col.accessorKey
+  }
+  return null
+}
+
 interface EnhancedDataTableProps<T> {
   data: T[]
   columns: ColumnDef<T>[]
@@ -80,7 +94,11 @@ export function EnhancedDataTable<T extends { id?: string | number }>({
   const headerGroups = table.getHeaderGroups()
   const pageRows = rows.map((row) => row.original)
 
-  const handleSelectAll = useCallback(() => {
+  /**
+   * Select or deselect all rows on the current page only.
+   * Note: This only affects visible rows on this page, not all data across pages.
+   */
+  const handleSelectAllOnPage = useCallback(() => {
     toggleSelectAll(pageRows.map((row) => String(row.id)))
   }, [pageRows, toggleSelectAll])
 
@@ -91,7 +109,7 @@ export function EnhancedDataTable<T extends { id?: string | number }>({
         <div className="border-b border-gray-200 px-6 py-4">
           <div className="flex flex-wrap gap-2">
             {columns.map((col) => {
-              const colId = typeof col.id === 'string' ? col.id : (col.accessorKey as string)
+              const colId = getColumnId(col)
               if (!colId) return null
               return (
                 <button
@@ -138,8 +156,9 @@ export function EnhancedDataTable<T extends { id?: string | number }>({
                     <input
                       type="checkbox"
                       checked={isAllSelected}
-                      onChange={handleSelectAll}
+                      onChange={handleSelectAllOnPage}
                       className="rounded"
+                      title="Select all rows on current page"
                     />
                   </th>
                 )}

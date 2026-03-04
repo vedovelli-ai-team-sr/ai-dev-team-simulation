@@ -9,7 +9,7 @@ interface UseRowSelectionOptions {
   onSelectionChange?: (selectedRows: Set<string>) => void
 }
 
-export function useRowSelection(options: UseRowSelectionOptions = {}) {
+export function useRowSelection({ onSelectionChange }: UseRowSelectionOptions = {}) {
   const [selectedRows, setSelectedRows] = useState<Set<string>>(new Set())
   const [isAllSelected, setIsAllSelected] = useState(false)
 
@@ -22,9 +22,9 @@ export function useRowSelection(options: UseRowSelectionOptions = {}) {
         newSelectedRows.add(rowId)
       }
       setSelectedRows(newSelectedRows)
-      options.onSelectionChange?.(newSelectedRows)
+      onSelectionChange?.(newSelectedRows)
     },
-    [selectedRows, options]
+    [selectedRows, onSelectionChange]
   )
 
   const toggleSelectAll = useCallback(
@@ -38,16 +38,16 @@ export function useRowSelection(options: UseRowSelectionOptions = {}) {
         setIsAllSelected(true)
       }
       setSelectedRows(newSelectedRows)
-      options.onSelectionChange?.(newSelectedRows)
+      onSelectionChange?.(newSelectedRows)
     },
-    [isAllSelected, options]
+    [isAllSelected, onSelectionChange]
   )
 
   const clearSelection = useCallback(() => {
     setSelectedRows(new Set())
     setIsAllSelected(false)
-    options.onSelectionChange?.(new Set())
-  }, [options])
+    onSelectionChange?.(new Set())
+  }, [onSelectionChange])
 
   return {
     selectedRows,
