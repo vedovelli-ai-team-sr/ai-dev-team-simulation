@@ -8,6 +8,7 @@ This guide documents the patterns and best practices implemented in this project
 2. [Query Configuration](#query-configuration)
 3. [Query Key Factory Pattern](#query-key-factory-pattern)
 4. [Advanced Hooks](#advanced-hooks)
+   - [Pagination Patterns](#pagination-patterns)
 5. [Example Implementations](#example-implementations)
 6. [MSW Handlers](#msw-handlers)
 7. [Error Handling](#error-handling)
@@ -170,6 +171,266 @@ const { mutate: deleteTask } = useDeleteMutation({
   mutationFn: () => deleteTaskAPI(taskId),
   invalidateQueries: queryKeys.tasks.all,
 })
+```
+
+### Pagination Patterns
+
+This project provides two pagination hooks for different use cases:
+
+#### Offset/Limit Pagination
+Best for traditional paginated interfaces with page numbers (e.g., products page 1-10).
+Simpler to implement but potentially less efficient with large datasets.
+Use `usePaginatedQuery` hook.
+
+#### Cursor-Based Pagination
+Best for infinite scroll interfaces and feed-like experiences.
+More efficient as the server only needs to return data after a cursor position.
+Use `useInfiniteScroll` hook.
+
+### usePaginatedQuery
+
+Handles offset/limit pagination with convenient navigation methods.
+
+**Location**: `src/hooks/usePaginatedQuery.ts`
+
+**Usage**:
+```typescript
+const {
+  data,
+  page,
+  pageSize,
+  totalPages,
+  total,
+  nextPage,
+  previousPage,
+  goToPage,
+  setPageSize,
+  canNextPage,
+  canPreviousPage,
+  isPending,
+  isError,
+  error,
+} = usePaginatedQuery({
+  queryKey: ['users'],
+  queryFn: (params) => fetchUsers(params),
+  initialPageSize: 20,
+})
+```
+
+**Features**:
+- Offset/limit pagination pattern
+- State management for page and page size
+- Navigation helpers (`nextPage`, `previousPage`, `goToPage`)
+- Boundary checks (`canNextPage`, `canPreviousPage`)
+- Full error and loading state handling
+- Automatic cache management per page
+
+**Handling Rapid Navigation**:
+
+To prevent issues with rapidly clicking between pages or changing page size during requests, disable UI controls while pending:
+
+```typescript
+const { data, page, pageSize, totalPages, setPageSize, goToPage, isPending } = usePaginatedQuery(...)
+
+<div>
+  <button onClick={() => previousPage()} disabled={!canPreviousPage || isPending}>
+    Previous
+  </button>
+  <span>Page {page} of {totalPages}</span>
+  <button onClick={() => nextPage()} disabled={!canNextPage || isPending}>
+    Next
+  </button>
+
+  <select
+    value={pageSize}
+    onChange={(e) => setPageSize(Number(e.target.value))}
+    disabled={isPending}
+  >
+    <option value={10}>10 per page</option>
+    <option value={20}>20 per page</option>
+    <option value={50}>50 per page</option>
+  </select>
+</div>
+```
+
+**Integration with TanStack Table**:
+```typescript
+const { data, page, pageSize, totalPages, setPageSize, goToPage, isPending } = usePaginatedQuery(...)
+
+const table = useReactTable({
+  data,
+  columns,
+  state: { pagination: { pageIndex: page - 1, pageSize } },
+  onPaginationChange: (updater) => {
+    if (isPending) return // Ignore changes while loading
+    const newState = typeof updater === 'function'
+      ? updater({ pageIndex: page - 1, pageSize })
+      : updater
+    setPageSize(newState.pageSize)
+    goToPage(newState.pageIndex + 1)
+  },
+  pageCount: totalPages,
+})
+```
+
+### useInfiniteScroll
+
+Handles cursor-based infinite pagination for feed-like interfaces.
+
+**Location**: `src/hooks/useInfiniteScroll.ts`
+
+**Cursor Parameter Clarification**:
+
+The cursor is a server-side pagination token that tells the API where to start fetching data:
+
+- **Initial cursor**: Usually `null` or `undefined` for the first page
+- **Server response**: Returns a `nextCursor` value (or `null` if no more data)
+- **End of data**: When server returns `nextCursor: null`, `hasNextPage` becomes `false`
+
+**Backend Implementation Example**:
+```typescript
+// API response format
+{
+  data: Item[],
+  nextCursor: "abc123" | null  // null signals end of data
+}
+
+// Server implementation (offset-based cursor)
+function encodeCursor(offset: number): string {
+  return Buffer.from(JSON.stringify({ offset })).toString('base64')
+}
+
+function decodeCursor(cursor: string): number {
+  const { offset } = JSON.parse(Buffer.from(cursor, 'base64').toString())
+  return offset
+}
+```
+
+**Usage**:
+```typescript
+const {
+  data,
+  hasNextPage,
+  isFetchingNextPage,
+  isPending,
+  isError,
+  error,
+  fetchNextPage,
+  refetch,
+  isRefetching,
+} = useInfiniteScroll({
+  queryKey: ['feed'],
+  queryFn: (cursor) => fetchFeedItems(cursor),
+  pageSize: 20,
+})
+```
+
+**Features**:
+- Cursor-based pagination for better performance
+- Automatic page concatenation
+- Loading states for initial and subsequent pages
+- Error handling per page
+- Refetch capability
+
+**Integration with React Virtual** (for performance with dynamic sizing):
+
+```typescript
+import { useVirtualizer } from '@tanstack/react-virtual'
+
+const { data, fetchNextPage, hasNextPage, isFetchingNextPage } = useInfiniteScroll(...)
+
+const virtualizer = useVirtualizer({
+  count: hasNextPage ? data.length + 1 : data.length,
+  getScrollElement: () => parentRef.current,
+  // Dynamic sizing: measure actual item heights
+  estimateSize: useCallback((index) => {
+    // Return cached height if available, or estimate based on content type
+    const item = data[index]
+    return itemHeights[item.id] || estimateSizeByType(item.type)
+  }, [data, itemHeights]),
+  overscan: 10,
+})
+
+// Measure actual sizes as items render
+useEffect(() => {
+  virtualizer.measure()
+}, [data, virtualizer])
+
+// Load more when scrolling near bottom
+useEffect(() => {
+  const [lastItem] = virtualizer.getVirtualItems().slice(-1)
+  if (!lastItem) return
+  if (lastItem.index >= data.length - 1 && hasNextPage && !isFetchingNextPage) {
+    fetchNextPage()
+  }
+}, [virtualizer.getVirtualItems(), data.length, hasNextPage, isFetchingNextPage, fetchNextPage])
+
+// Helper function to estimate size by content type
+function estimateSizeByType(type: string): number {
+  const estimates: Record<string, number> = {
+    'text': 40,
+    'image': 200,
+    'video': 300,
+  }
+  return estimates[type] || 50
+}
+```
+
+**Practical Example - Feed Component**:
+```typescript
+export function InfiniteScrollFeed() {
+  const { data, fetchNextPage, hasNextPage, isFetchingNextPage, isPending } = useInfiniteScroll({
+    queryKey: ['feedItems'],
+    queryFn: (cursor) => api.get('/feed', { cursor }),
+    pageSize: 20,
+  })
+
+  const parentRef = useRef<HTMLDivElement>(null)
+  const itemHeights = useRef<Record<string, number>>({})
+
+  const virtualizer = useVirtualizer({
+    count: hasNextPage ? data.length + 1 : data.length,
+    getScrollElement: () => parentRef.current,
+    estimateSize: (index) => itemHeights.current[data[index]?.id] || 150,
+    overscan: 5,
+  })
+
+  useEffect(() => {
+    const [lastItem] = virtualizer.getVirtualItems().slice(-1)
+    if (lastItem?.index >= data.length - 1 && hasNextPage && !isFetchingNextPage) {
+      fetchNextPage()
+    }
+  }, [virtualizer.getVirtualItems()])
+
+  return (
+    <div ref={parentRef} style={{ height: '100vh', overflow: 'auto' }}>
+      <div style={{ height: `${virtualizer.getTotalSize()}px`, position: 'relative' }}>
+        {virtualizer.getVirtualItems().map((vItem) => {
+          if (vItem.index > data.length - 1) {
+            return isFetchingNextPage ? <LoadingSpinner key="spinner" /> : null
+          }
+          return (
+            <div
+              key={data[vItem.index].id}
+              ref={(el) => {
+                if (el) itemHeights.current[data[vItem.index].id] = el.offsetHeight
+              }}
+              style={{
+                position: 'absolute',
+                top: 0,
+                left: 0,
+                width: '100%',
+                transform: `translateY(${vItem.start}px)`,
+              }}
+            >
+              <FeedItem item={data[vItem.index]} />
+            </div>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
 ```
 
 ## Example Implementations
