@@ -380,6 +380,7 @@ export const createQueryClient = (): QueryClient => {
       queries: {
         staleTime: 1000 * 60 * 5, // Data fresh for 5 minutes
         gcTime: 1000 * 60 * 10, // Keep unused data for 10 minutes
+        // Note: gcTime is for TanStack Query v5+. In v4, use cacheTime instead.
         retry: 1,
         refetchOnWindowFocus: false,
         refetchOnReconnect: false,
