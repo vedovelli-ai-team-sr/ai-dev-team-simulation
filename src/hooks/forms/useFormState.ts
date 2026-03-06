@@ -37,10 +37,12 @@ export interface UseFormStateReturn<T> {
 /**
  * useFormState Hook
  *
- * Core form state management hook wrapping TanStack Form.
+ * Core form state management hook wrapping TanStack Form (v5+).
+ * Uses the modern validatorAdapter pattern and onChangeAsync validators.
+ *
  * Provides:
  * - Client-side validation with Zod schemas
- * - Async field validation (e.g., email uniqueness)
+ * - Async field validation (e.g., email uniqueness) with debouncing support
  * - Server-side validation error handling
  * - Form submission with loading states
  * - Field-level error management
@@ -100,16 +102,18 @@ export function useFormState<T>({
 
         // Handle server-side field errors
         if (!result.success && result.fieldErrors) {
-          // Apply field errors from server
+          // Set form submission errors map for server-side validation failures
+          const errorMap: Record<string, string[]> = {}
           Object.entries(result.fieldErrors).forEach(([field, errors]) => {
-            const fieldApi = form.getFieldInfo(field as keyof T)
-            if (fieldApi) {
-              fieldApi.instance?.setFieldMeta((prev) => ({
-                ...prev,
-                errors: errors,
-              }))
+            if (Array.isArray(errors) && errors.length > 0) {
+              errorMap[field] = errors
             }
           })
+
+          if (Object.keys(errorMap).length > 0) {
+            // Store errors via form state for retrieval by getFieldError
+            form.setFieldMeta('_serverErrors', errorMap as never)
+          }
         }
 
         // Handle server error
@@ -127,42 +131,58 @@ export function useFormState<T>({
     validatorAdapter: zodValidator(),
     validators: {
       onChange: schema,
+      // Build async validators directly into config
+      onChangeAsync: Object.entries(onAsyncValidate).length > 0
+        ? async ({ value }: { value: T }) => {
+            const errors: Record<string, string> = {}
+
+            await Promise.all(
+              Object.entries(onAsyncValidate).map(async ([fieldName, validator]) => {
+                try {
+                  const error = await validator((value as Record<string, unknown>)[fieldName])
+                  if (error) {
+                    errors[fieldName] = error
+                  }
+                } catch (error) {
+                  errors[fieldName] = 'Validation error'
+                }
+              }),
+            )
+
+            return Object.keys(errors).length > 0 ? errors : undefined
+          }
+        : undefined,
     },
   })
-
-  // Add async validators for field-level validation
-  if (Object.keys(onAsyncValidate).length > 0) {
-    Object.entries(onAsyncValidate).forEach(([fieldName, validator]) => {
-      const fieldApi = form.getFieldInfo(fieldName as keyof T)
-      if (fieldApi) {
-        fieldApi.instance?.setValidators({
-          onChange: [async (value) => {
-            try {
-              const error = await validator(value)
-              return error
-            } catch (error) {
-              return 'Validation error'
-            }
-          }],
-        })
-      }
-    })
-  }
 
   const isSubmitting = form.state.isSubmitting
   const isValidating = form.state.isValidating
 
+  // Extract field errors from fieldMeta with type safety
   const fieldErrors = form.state.fieldMeta
     ? Object.entries(form.state.fieldMeta).reduce(
         (acc, [field, meta]) => {
-          if (meta?.errors && meta.errors.length > 0) {
-            acc[field] = meta.errors as string[]
+          // Only include fields with actual error arrays
+          if (
+            meta &&
+            typeof meta === 'object' &&
+            'errors' in meta &&
+            Array.isArray(meta.errors) &&
+            meta.errors.length > 0
+          ) {
+            acc[field] = meta.errors.filter((e) => typeof e === 'string') as string[]
           }
           return acc
         },
         {} as Record<string, string[]>,
       )
     : {}
+
+  // Get server errors if stored
+  const serverErrors = (form.state.fieldMeta?.['_serverErrors'] as Record<string, string[]> | undefined) || {}
+
+  // Merge client and server errors
+  const allFieldErrors = { ...serverErrors, ...fieldErrors }
 
   const submitError = form.state.errorMap?.onSubmit?.[0] ?? null
 
@@ -176,8 +196,25 @@ export function useFormState<T>({
   }
 
   const getFieldError = (fieldName: string): string | undefined => {
+    // Check server errors first, then client-side errors
+    const serverFieldErrors = allFieldErrors[fieldName]
+    if (serverFieldErrors && Array.isArray(serverFieldErrors) && serverFieldErrors.length > 0) {
+      const firstError = serverFieldErrors[0]
+      if (typeof firstError === 'string') {
+        return firstError
+      }
+    }
+
+    // Fall back to client-side validation errors
     const meta = form.state.fieldMeta?.[fieldName]
-    return meta?.errors?.[0] as string | undefined
+    if (meta && 'errors' in meta && Array.isArray(meta.errors) && meta.errors.length > 0) {
+      const firstError = meta.errors[0]
+      if (typeof firstError === 'string') {
+        return firstError
+      }
+    }
+
+    return undefined
   }
 
   const setFieldValue = <K extends keyof T>(field: K, value: T[K]) => {
@@ -193,7 +230,7 @@ export function useFormState<T>({
     isSubmitting,
     isValidating,
     submitError,
-    fieldErrors,
+    fieldErrors: allFieldErrors,
     handleSubmit,
     getFieldError,
     setFieldValue,

@@ -423,6 +423,36 @@ See `src/mocks/formSubmissionHandlers.ts` for implementation details.
 4. **Reset after success** - Use `form.reset()` to clear form after successful submission
 5. **Show loading states** - Use `isSubmitting` and `isValidating` flags in UI
 6. **Type inference** - Use `z.infer<typeof schema>` for automatic type safety
+7. **Debounce async validators** - For server-side checks, wrap validators with debounce to prevent hammering your API:
+
+```tsx
+import { useCallback } from 'react'
+
+const debounce = (fn: Function, delay: number) => {
+  let timeout: NodeJS.Timeout
+  return (...args: any[]) => {
+    clearTimeout(timeout)
+    timeout = setTimeout(() => fn(...args), delay)
+  }
+}
+
+const { ... } = useFormState({
+  // ... other config
+  onAsyncValidate: {
+    email: useCallback(
+      debounce(async (email) => {
+        const response = await fetch('/api/validate/email', {
+          method: 'POST',
+          body: JSON.stringify({ email }),
+        })
+        const result = await response.json()
+        return result.available ? undefined : 'Email already registered'
+      }, 300),
+      [],
+    ),
+  },
+})
+```
 
 ## Comparison with Alternatives
 
