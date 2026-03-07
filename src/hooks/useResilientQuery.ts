@@ -34,8 +34,22 @@ import { DEFAULT_RETRY_CONFIG } from '@/types/resilience'
 /**
  * Global circuit breaker state storage
  * Maps query keys to their circuit breaker states
+ *
+ * Note: Uses WeakMap-like behavior by cleaning up on successful queries
+ * and providing explicit cleanup for unmount scenarios
  */
 const circuitBreakerStates = new Map<string, CircuitBreakerState>()
+
+/**
+ * Clear circuit breaker state for a query key
+ * Called after successful query or on component unmount
+ */
+export function clearCircuitBreakerState(
+  queryKey: readonly unknown[],
+): void {
+  const key = serializeQueryKey(queryKey)
+  circuitBreakerStates.delete(key)
+}
 
 /**
  * Convert query key to string for circuit breaker tracking
@@ -159,6 +173,8 @@ export function useResilientQuery<
   const [isCircuitBreakerOpen, setIsCircuitBreakerOpen] = useState(
     getCircuitBreakerState(queryKey).isOpen,
   )
+  // Track the actual attempt number separately from failure count
+  const [attemptCount, setAttemptCount] = useState(1)
 
   // Create wrapped query function that tracks circuit breaker state
   const wrappedQueryFn = useCallback(async () => {
@@ -174,7 +190,10 @@ export function useResilientQuery<
     try {
       const data = await queryFn()
       recordSuccess(queryKey)
+      // Clean up the circuit breaker state after success to prevent memory growth
+      clearCircuitBreakerState(queryKey)
       setRetryAttempt(0)
+      setAttemptCount(1)
       setIsCircuitBreakerOpen(false)
       return data
     } catch (error) {
@@ -197,11 +216,12 @@ export function useResilientQuery<
     // Query tracks attempts internally, we extract from the query state
     // When the query is being retried, its status will be 'pending' with isFetching true
     if (query.status === 'pending' && query.isFetching) {
-      // Get current attempt from circuit breaker state
+      // Use the actual attempt count, not failure count
+      // Failure count only increments on failures, but attempt includes successful retries
       const cbState = getCircuitBreakerState(queryKey)
-      setRetryAttempt(cbState.failureCount)
+      setRetryAttempt(attemptCount + cbState.failureCount)
     }
-  }, [query.status, query.isFetching, queryKey])
+  }, [query.status, query.isFetching, queryKey, attemptCount])
 
   // Call success callback
   useEffect(() => {
@@ -217,14 +237,25 @@ export function useResilientQuery<
     }
   }, [query.isError, query.error, onError])
 
+  // Clean up circuit breaker state on unmount
+  useEffect(() => {
+    return () => {
+      clearCircuitBreakerState(queryKey)
+    }
+  }, [queryKey])
+
   // Manual retry function
+  // Atomically reset state and refetch to avoid race conditions
   const retry = useCallback(() => {
     const cbState = getCircuitBreakerState(queryKey)
     // Reset circuit breaker and failure count for manual retry
     cbState.failureCount = 0
     cbState.isOpen = false
+    // Update all state synchronously before refetch to prevent stale reads
     setRetryAttempt(0)
+    setAttemptCount(1)
     setIsCircuitBreakerOpen(false)
+    // Refetch after all state updates are batched
     query.refetch()
   }, [queryKey, query])
 
