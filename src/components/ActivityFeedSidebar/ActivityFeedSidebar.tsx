@@ -14,6 +14,8 @@ function getEventIcon(type: ActivityEvent['type']): string {
       return '👤'
     case 'agent_status_change':
       return '🤖'
+    default:
+      throw new Error(`Unknown event type: ${type}`)
   }
 }
 
@@ -27,6 +29,8 @@ function getEventLabel(type: ActivityEvent['type']): string {
       return 'Task assigned'
     case 'agent_status_change':
       return 'Agent status'
+    default:
+      throw new Error(`Unknown event type: ${type}`)
   }
 }
 
@@ -87,34 +91,36 @@ function ActivityEventRow({ event }: { event: ActivityEvent }) {
           )}
 
           {/* Reactions */}
-          {event.reactions && Object.keys(event.reactions).length > 0 && (
-            <div className="flex flex-wrap gap-1 mt-2">
-              {(Object.entries(event.reactions) as [ReactionEmoji, number][]).map(
-                ([emoji, count]) => (
-                  <ReactionButton
-                    key={emoji}
-                    eventId={event.id}
-                    emoji={emoji}
-                    count={count}
-                  />
-                ),
-              )}
-            </div>
-          )}
+          <div className="flex flex-wrap gap-1 mt-2">
+            {/* Show existing reactions */}
+            {event.reactions && Object.keys(event.reactions).length > 0 && (
+              <>
+                {(Object.entries(event.reactions) as [ReactionEmoji, number][]).map(
+                  ([emoji, count]) => (
+                    <ReactionButton
+                      key={emoji}
+                      eventId={event.id}
+                      emoji={emoji}
+                      count={count}
+                    />
+                  ),
+                )}
+              </>
+            )}
 
-          {/* Add reaction buttons for events without reactions */}
-          {(!event.reactions || Object.keys(event.reactions).length === 0) && (
-            <div className="flex flex-wrap gap-1 mt-2">
-              {(['👍', '❤️', '🚀'] as const).map((emoji) => (
+            {/* Show add-reaction button if not all default reactions exist */}
+            {(['👍', '❤️', '🚀'] as const).map((emoji) => {
+              const hasReaction = event.reactions?.[emoji]
+              return !hasReaction ? (
                 <ReactionButton
                   key={emoji}
                   eventId={event.id}
                   emoji={emoji}
                   count={0}
                 />
-              ))}
-            </div>
-          )}
+              ) : null
+            })}
+          </div>
         </div>
       </div>
     </div>
