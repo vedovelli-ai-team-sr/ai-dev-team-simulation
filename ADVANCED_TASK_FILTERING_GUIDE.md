@@ -81,7 +81,9 @@ function TaskList() {
 
       <select
         value={filters.priority || ''}
-        onChange={(e) => filters.setPriorityFilter(e.target.value as any)}
+        onChange={(e) => filters.setPriorityFilter(
+          (e.target.value || null) as TaskPriority | null
+        )}
       >
         <option value="">All Priorities</option>
         <option value="low">Low</option>
@@ -138,7 +140,9 @@ function AdvancedTaskFilters() {
       <label>Priority:</label>
       <select
         value={filters.priority || ''}
-        onChange={(e) => filters.setPriorityFilter(e.target.value as any)}
+        onChange={(e) => filters.setPriorityFilter(
+          (e.target.value || null) as TaskPriority | null
+        )}
       >
         <option value="">All</option>
         <option value="high">High</option>
@@ -149,12 +153,12 @@ function AdvancedTaskFilters() {
       {/* Status Multi-Select */}
       <label>Status:</label>
       <div>
-        {['backlog', 'in-progress', 'in-review', 'done'].map((status) => (
+        {(['backlog', 'in-progress', 'in-review', 'done'] as const).map((status) => (
           <label key={status}>
             <input
               type="checkbox"
-              checked={filters.status.includes(status as any)}
-              onChange={() => filters.toggleStatus(status as any)}
+              checked={filters.status.includes(status)}
+              onChange={() => filters.toggleStatus(status)}
             />
             {status}
           </label>
@@ -316,7 +320,9 @@ export function TaskFilterPanel() {
         <legend>Priority</legend>
         <select
           value={filters.priority || ''}
-          onChange={(e) => filters.setPriorityFilter(e.target.value as any)}
+          onChange={(e) => filters.setPriorityFilter(
+            (e.target.value || null) as TaskPriority | null
+          )}
         >
           <option value="">Any</option>
           <option value="high">High</option>
@@ -327,12 +333,12 @@ export function TaskFilterPanel() {
 
       <fieldset>
         <legend>Status (multi-select)</legend>
-        {['backlog', 'in-progress', 'in-review', 'done'].map((s) => (
+        {(['backlog', 'in-progress', 'in-review', 'done'] as const).map((s) => (
           <label key={s}>
             <input
               type="checkbox"
-              checked={filters.status.includes(s as any)}
-              onChange={() => filters.toggleStatus(s as any)}
+              checked={filters.status.includes(s)}
+              onChange={() => filters.toggleStatus(s)}
             />
             {s}
           </label>
@@ -570,6 +576,72 @@ const { data } = useQuery({
 - Use `isPreviousData` from `useQuery` to show loading state
 - The `keepPreviousData` option ensures smooth transitions
 - Increase `staleTime` if you want data to stay fresh longer
+
+## API Response Structure
+
+The mock MSW handler returns the following response structure:
+
+```typescript
+interface FilteredTasksResponse {
+  data: Task[]              // Array of filtered tasks
+  total: number             // Total number of tasks matching filters
+  pageIndex: number         // Zero-based page index (preferred for requests)
+  page: number              // One-based page number (for display only)
+  pageSize: number          // Number of items per page
+  totalPages: number        // Total number of pages available
+}
+```
+
+**Note**: Both `page` and `pageIndex` are provided for convenience. When making subsequent requests, use `pageIndex` (zero-based) to maintain consistency with the hook's internal state.
+
+## Error Handling Example
+
+Properly handle errors in your filtering UI:
+
+```typescript
+function TaskFilteringUI() {
+  const filters = useAdvancedTaskFilters()
+
+  const { data, isLoading, error, isError } = useQuery({
+    queryKey: filters.queryKey,
+    queryFn: async () => {
+      const response = await fetch('/api/tasks/filtered', {
+        method: 'POST',
+        body: JSON.stringify(filters.state),
+      })
+      if (!response.ok) throw new Error('Failed to fetch tasks')
+      return response.json()
+    },
+    ...filters.queryOptions,
+  })
+
+  return (
+    <div>
+      {isLoading && <div className="loading">Loading tasks...</div>}
+
+      {isError && (
+        <div className="error">
+          <p>Failed to load tasks</p>
+          <button onClick={() => filters.clearAllFilters()}>
+            Reset filters and retry
+          </button>
+        </div>
+      )}
+
+      {data && (
+        <>
+          <div className="results">
+            Showing {data.data.length} of {data.total} tasks
+          </div>
+          {data.data.map((task) => (
+            <TaskCard key={task.id} task={task} />
+          ))}
+        </>
+      )}
+    </div>
+  )
+}
+```
 
 ## See Also
 
