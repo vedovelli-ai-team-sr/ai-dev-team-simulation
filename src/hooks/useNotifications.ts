@@ -1,3 +1,4 @@
+import { useCallback } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import type { Notification, NotificationCenter } from '../types/notification'
 import { useMutationWithRetry } from './useMutationWithRetry'
@@ -22,6 +23,28 @@ interface MarkAsReadRequest {
 }
 
 /**
+ * Batch mark as read request
+ */
+interface MarkMultipleAsReadRequest {
+  ids: string[]
+}
+
+/**
+ * Dismiss notification request
+ */
+interface DismissNotificationRequest {
+  id: string
+}
+
+/**
+ * Query key factory for consistent cache key generation
+ */
+const notificationQueryKeys = {
+  all: () => ['notifications'],
+  withFilters: (unreadOnly: boolean) => ['notifications', { unreadOnly }],
+}
+
+/**
  * Fetch real-time notifications with polling and provide mutations for interaction
  *
  * Features:
@@ -42,10 +65,11 @@ export function useNotifications(options: UseNotificationsOptions = {}) {
   } = options
 
   const queryClient = useQueryClient()
+  const queryKey = notificationQueryKeys.withFilters(unreadOnly)
 
   // Query to fetch notifications with polling
   const query = useQuery<NotificationCenter, Error>({
-    queryKey: ['notifications', { unreadOnly }],
+    queryKey,
     queryFn: async () => {
       const params = new URLSearchParams()
       if (unreadOnly) {
@@ -94,12 +118,16 @@ export function useNotifications(options: UseNotificationsOptions = {}) {
     },
     onMutate: async ({ id }) => {
       // Cancel any pending requests for notifications
-      await queryClient.cancelQueries({ queryKey: ['notifications'] })
+      await queryClient.cancelQueries({ queryKey: notificationQueryKeys.all() })
 
-      // Snapshot previous data
-      const previousData = queryClient.getQueryData<NotificationCenter>(['notifications', { unreadOnly: false }])
+      // Snapshot current query cache (for the actual unreadOnly setting)
+      const previousData = queryClient.getQueryData<NotificationCenter>(queryKey)
 
-      // Optimistically update notification cache
+      // Also snapshot the alternate unreadOnly state for restoration
+      const alternateKey = notificationQueryKeys.withFilters(!unreadOnly)
+      const previousAlternateData = queryClient.getQueryData<NotificationCenter>(alternateKey)
+
+      // Optimistically update current cache (with actual unreadOnly value)
       if (previousData) {
         const updated = {
           ...previousData,
@@ -108,78 +136,202 @@ export function useNotifications(options: UseNotificationsOptions = {}) {
           ),
           unreadCount: Math.max(0, previousData.unreadCount - 1),
         }
-        queryClient.setQueryData(['notifications', { unreadOnly: false }], updated)
+        queryClient.setQueryData(queryKey, updated)
+      }
 
-        // Also update unreadOnly query if it's being used
-        queryClient.setQueryData(['notifications', { unreadOnly: true }], (old?: NotificationCenter) => {
-          if (!old) return old
-          return {
-            ...old,
-            notifications: old.notifications.filter((notif) => notif.id !== id),
-            unreadCount: Math.max(0, old.unreadCount - 1),
-          }
+      // Also update alternate unreadOnly state (remove from unread-only if currently showing all, or remove if showing unread-only)
+      if (previousAlternateData) {
+        if (unreadOnly) {
+          // Currently showing unreadOnly: true, so also update unreadOnly: false
+          queryClient.setQueryData(alternateKey, (old?: NotificationCenter) => {
+            if (!old) return old
+            return {
+              ...old,
+              notifications: old.notifications.map((notif) =>
+                notif.id === id ? { ...notif, read: true } : notif
+              ),
+              unreadCount: old.unreadCount, // Count stays same since we're updating "all" list
+            }
+          })
+        } else {
+          // Currently showing unreadOnly: false, so also update unreadOnly: true (remove the notification)
+          queryClient.setQueryData(alternateKey, (old?: NotificationCenter) => {
+            if (!old) return old
+            return {
+              ...old,
+              notifications: old.notifications.filter((notif) => notif.id !== id),
+              unreadCount: Math.max(0, old.unreadCount - 1),
+            }
+          })
+        }
+      }
+
+      return { previousData, previousAlternateData }
+    },
+    onError: (_, __, context) => {
+      // Revert optimistic updates on error - restore both cache states
+      if (context?.previousData) {
+        queryClient.setQueryData(queryKey, context.previousData)
+      }
+      if (context?.previousAlternateData) {
+        const alternateKey = notificationQueryKeys.withFilters(!unreadOnly)
+        queryClient.setQueryData(alternateKey, context.previousAlternateData)
+      }
+    },
+  })
+
+  // Mutation for marking multiple notifications as read
+  const markMultipleAsReadMutation = useMutationWithRetry<Notification[], MarkMultipleAsReadRequest>({
+    mutationFn: async ({ ids }) => {
+      const response = await fetch('/api/notifications/read-batch', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ids }),
+      })
+
+      if (!response.ok) {
+        throw new Error(`Failed to mark notifications as read: ${response.statusText}`)
+      }
+
+      return response.json() as Promise<Notification[]>
+    },
+    onMutate: async ({ ids }) => {
+      // Cancel pending requests
+      await queryClient.cancelQueries({ queryKey: notificationQueryKeys.all() })
+
+      // Snapshot both cache states
+      const previousData = queryClient.getQueryData<NotificationCenter>(queryKey)
+      const alternateKey = notificationQueryKeys.withFilters(!unreadOnly)
+      const previousAlternateData = queryClient.getQueryData<NotificationCenter>(alternateKey)
+
+      // Update current cache
+      if (previousData) {
+        const unreadReducedBy = previousData.notifications.filter((n) => ids.includes(n.id) && !n.read).length
+        queryClient.setQueryData(queryKey, {
+          ...previousData,
+          notifications: previousData.notifications.map((notif) =>
+            ids.includes(notif.id) ? { ...notif, read: true } : notif
+          ),
+          unreadCount: Math.max(0, previousData.unreadCount - unreadReducedBy),
         })
       }
 
-      return { previousData }
+      // Update alternate cache
+      if (previousAlternateData) {
+        if (unreadOnly) {
+          // Remove marked notifications from unreadOnly: true cache
+          queryClient.setQueryData(alternateKey, {
+            ...previousAlternateData,
+            notifications: previousAlternateData.notifications.filter((n) => !ids.includes(n.id)),
+            unreadCount: Math.max(0, previousAlternateData.unreadCount - ids.length),
+          })
+        }
+      }
+
+      return { previousData, previousAlternateData }
     },
     onError: (_, __, context) => {
-      // Revert optimistic updates on error
       if (context?.previousData) {
-        queryClient.setQueryData(['notifications', { unreadOnly: false }], context.previousData)
+        queryClient.setQueryData(queryKey, context.previousData)
+      }
+      if (context?.previousAlternateData) {
+        const alternateKey = notificationQueryKeys.withFilters(!unreadOnly)
+        queryClient.setQueryData(alternateKey, context.previousAlternateData)
       }
     },
-    onSuccess: () => {
-      // Invalidate to refetch fresh data after successful mutation
-      queryClient.invalidateQueries({ queryKey: ['notifications'] })
+  })
+
+  // Mutation for dismissing a notification
+  const dismissNotificationMutation = useMutationWithRetry<unknown, DismissNotificationRequest>({
+    mutationFn: async ({ id }) => {
+      const response = await fetch(`/api/notifications/${id}/dismiss`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+      })
+
+      if (!response.ok) {
+        throw new Error(`Failed to dismiss notification: ${response.statusText}`)
+      }
+
+      return response.json()
+    },
+    onMutate: async ({ id }) => {
+      // Cancel pending requests
+      await queryClient.cancelQueries({ queryKey: notificationQueryKeys.all() })
+
+      // Snapshot both cache states
+      const previousData = queryClient.getQueryData<NotificationCenter>(queryKey)
+      const alternateKey = notificationQueryKeys.withFilters(!unreadOnly)
+      const previousAlternateData = queryClient.getQueryData<NotificationCenter>(alternateKey)
+
+      // Remove notification from current cache
+      if (previousData) {
+        const notificationToRemove = previousData.notifications.find((n) => n.id === id)
+        const unreadReduction = notificationToRemove && !notificationToRemove.read ? 1 : 0
+
+        queryClient.setQueryData(queryKey, {
+          ...previousData,
+          notifications: previousData.notifications.filter((n) => n.id !== id),
+          total: Math.max(0, previousData.total - 1),
+          unreadCount: Math.max(0, previousData.unreadCount - unreadReduction),
+        })
+      }
+
+      // Remove from alternate cache too
+      if (previousAlternateData) {
+        const notificationToRemove = previousAlternateData.notifications.find((n) => n.id === id)
+        const unreadReduction = notificationToRemove && !notificationToRemove.read ? 1 : 0
+
+        queryClient.setQueryData(alternateKey, {
+          ...previousAlternateData,
+          notifications: previousAlternateData.notifications.filter((n) => n.id !== id),
+          total: Math.max(0, previousAlternateData.total - 1),
+          unreadCount: Math.max(0, previousAlternateData.unreadCount - unreadReduction),
+        })
+      }
+
+      return { previousData, previousAlternateData }
+    },
+    onError: (_, __, context) => {
+      if (context?.previousData) {
+        queryClient.setQueryData(queryKey, context.previousData)
+      }
+      if (context?.previousAlternateData) {
+        const alternateKey = notificationQueryKeys.withFilters(!unreadOnly)
+        queryClient.setQueryData(alternateKey, context.previousAlternateData)
+      }
     },
   })
 
   /**
-   * Mark a single notification as read
+   * Mark a single notification as read (memoized)
    */
-  const markAsRead = (id: string) => {
-    markAsReadMutation.mutate({ id })
-  }
+  const markAsRead = useCallback(
+    (id: string) => {
+      markAsReadMutation.mutate({ id })
+    },
+    [markAsReadMutation]
+  )
 
   /**
-   * Mark multiple notifications as read
+   * Mark multiple notifications as read (returns mutation trigger)
    */
-  const markMultipleAsRead = async (ids: string[]) => {
-    const response = await fetch('/api/notifications/read-batch', {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ids }),
-    })
-
-    if (!response.ok) {
-      throw new Error(`Failed to mark notifications as read: ${response.statusText}`)
-    }
-
-    // Invalidate queries after batch operation
-    await queryClient.invalidateQueries({ queryKey: ['notifications'] })
-
-    return response.json() as Promise<Notification[]>
-  }
+  const markMultipleAsRead = useCallback(
+    (ids: string[]) => {
+      markMultipleAsReadMutation.mutate({ ids })
+    },
+    [markMultipleAsReadMutation]
+  )
 
   /**
-   * Dismiss (delete) a notification
+   * Dismiss (delete) a notification (returns mutation trigger)
    */
-  const dismissNotification = async (id: string) => {
-    const response = await fetch(`/api/notifications/${id}/dismiss`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-    })
-
-    if (!response.ok) {
-      throw new Error(`Failed to dismiss notification: ${response.statusText}`)
-    }
-
-    // Invalidate queries after dismiss
-    await queryClient.invalidateQueries({ queryKey: ['notifications'] })
-
-    return response.json()
-  }
+  const dismissNotification = useCallback(
+    (id: string) => {
+      dismissNotificationMutation.mutate({ id })
+    },
+    [dismissNotificationMutation]
+  )
 
   return {
     // Query state
@@ -190,9 +342,17 @@ export function useNotifications(options: UseNotificationsOptions = {}) {
     unreadCount: query.data?.unreadCount ?? 0,
     total: query.data?.total ?? 0,
 
-    // Mutation state
-    markAsReadLoading: markAsReadMutation.isLoading,
+    // Mark as read mutation state
+    markAsReadLoading: markAsReadMutation.isPending,
     markAsReadError: markAsReadMutation.error,
+
+    // Mark multiple as read mutation state
+    markMultipleAsReadLoading: markMultipleAsReadMutation.isPending,
+    markMultipleAsReadError: markMultipleAsReadMutation.error,
+
+    // Dismiss notification mutation state
+    dismissLoading: dismissNotificationMutation.isPending,
+    dismissError: dismissNotificationMutation.error,
 
     // Actions
     markAsRead,
