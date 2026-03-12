@@ -266,13 +266,22 @@ describe('notification handlers', () => {
       const response = await fetch('/api/notifications')
       const data = (await response.json()) as NotificationsResponse
 
+      const validTypes = [
+        'task_assigned',
+        'task_unassigned',
+        'sprint_started',
+        'sprint_completed',
+        'comment_added',
+        'status_changed',
+        'agent_event',
+        'performance_alert',
+      ]
+
       data.data.forEach((notif) => {
         expect(notif.id).toBeDefined()
         expect(typeof notif.id).toBe('string')
 
-        expect(['agent_event', 'sprint_change', 'performance_alert']).toContain(
-          notif.type
-        )
+        expect(validTypes).toContain(notif.type)
 
         expect(notif.message).toBeDefined()
         expect(typeof notif.message).toBe('string')
@@ -308,6 +317,41 @@ describe('notification handlers', () => {
         withMetadata.forEach((notif) => {
           expect(typeof notif.metadata).toBe('object')
         })
+      }
+    })
+
+    it('notification IDs match their generation order (no timestamp bugs)', async () => {
+      const response = await fetch('/api/notifications')
+      const data = (await response.json()) as NotificationsResponse
+
+      // Notifications should be in reverse chronological order (newest first)
+      // and IDs should increase as timestamps get older
+      if (data.data.length > 1) {
+        for (let i = 1; i < data.data.length; i++) {
+          const current = data.data[i]
+          const previous = data.data[i - 1]
+
+          // Current timestamp should be older than previous
+          const currentTime = new Date(current.timestamp).getTime()
+          const previousTime = new Date(previous.timestamp).getTime()
+          expect(currentTime).toBeLessThanOrEqual(previousTime)
+
+          // Extract ID numbers for comparison
+          const currentIdNum = parseInt(current.id.split('-')[1], 10)
+          const previousIdNum = parseInt(previous.id.split('-')[1], 10)
+
+          // IDs should increase as we go back in time
+          expect(currentIdNum).toBeGreaterThan(previousIdNum)
+
+          // Time difference should be roughly 5 minutes per ID increment
+          // (allowing some tolerance for rounding)
+          const timeDiffMs = previousTime - currentTime
+          const minutesDiff = timeDiffMs / (60 * 1000)
+          const expectedMinutes = (currentIdNum - previousIdNum) * 5
+
+          // Should be close to expected (within 1 minute tolerance)
+          expect(Math.abs(minutesDiff - expectedMinutes)).toBeLessThan(1)
+        }
       }
     })
   })
