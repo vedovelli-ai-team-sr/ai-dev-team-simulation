@@ -30,20 +30,24 @@ function generateMockNotifications(): Notification[] {
 
   /**
    * Helper to create a notification with proper timestamp alignment.
-   * Captures the current id before incrementing to ensure consistency
-   * between the notification ID and its timestamp calculation.
-   * This prevents timestamp calculation bugs where id is incremented
-   * in the template literal before being used in the timestamp.
    *
-   * Timestamps are offset such that earlier-created notifications
-   * have more recent timestamps (lower id = closer to now), simulating
-   * notifications arriving in reverse chronological order. Each notification
-   * is offset by 5 minutes from the previous one.
+   * The global `id` counter increments for each notification and is used to
+   * calculate the timestamp offset. This ensures notifications appear in
+   * reverse chronological order (newest first when sorted by timestamp).
    *
-   * Example:
-   * - notif-1: created first, timestamp = now - 5 minutes (most recent)
-   * - notif-2: created second, timestamp = now - 10 minutes
-   * - notif-7: created last, timestamp = now - 35 minutes (oldest)
+   * Timestamp Logic (Intentional Design):
+   * - Each notification is assigned an incrementing ID (1, 2, 3, ...)
+   * - The ID directly maps to timestamp: timestamp = now - (id * 5 minutes)
+   * - Result: Earlier-created notifications have older timestamps
+   * - Example:
+   *   - notif-1: timestamp = now - 5min (most recent)
+   *   - notif-2: timestamp = now - 10min
+   *   - notif-7: timestamp = now - 35min (oldest)
+   *
+   * Why capture currentId before increment?
+   * The `id++` happens AFTER the notification is pushed, ensuring the
+   * notification's ID string and its timestamp offset always match.
+   * This prevents any off-by-one errors.
    */
   const addNotification = (notif: Omit<Notification, 'timestamp'>) => {
     const currentId = id

@@ -302,18 +302,34 @@ export function useNotifications(options: UseNotificationsOptions = {}) {
     wsConnected: enableWebSocket && wsConnected,
 
     // Mutations
+    /**
+     * Mark a single notification as read
+     * Usage: markAsRead.mutate(notificationId)
+     * Supports optimistic updates with automatic rollback on error
+     */
     markAsRead: {
       mutate: markAsReadMutation.mutate,
       mutateAsync: markAsReadMutation.mutateAsync,
       isPending: markAsReadMutation.isPending,
       error: markAsReadMutation.error,
     },
+    /**
+     * Mark multiple notifications as read in one operation
+     * Usage: markAsReadBatch.mutate([notificationId1, notificationId2])
+     * Useful for bulk operations
+     */
     markAsReadBatch: {
       mutate: markAsReadBatchMutation.mutate,
       mutateAsync: markAsReadBatchMutation.mutateAsync,
       isPending: markAsReadBatchMutation.isPending,
       error: markAsReadBatchMutation.error,
     },
+    /**
+     * Dismiss (remove) a notification from the list
+     * Usage: dismiss.mutate(notificationId)
+     * Removes the notification entirely and updates unread count if needed
+     * Supports optimistic updates with automatic rollback on error
+     */
     dismiss: {
       mutate: dismissMutation.mutate,
       mutateAsync: dismissMutation.mutateAsync,

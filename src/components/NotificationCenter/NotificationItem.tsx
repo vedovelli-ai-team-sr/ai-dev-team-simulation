@@ -13,11 +13,24 @@ interface NotificationItemProps {
  * NotificationItem Component
  *
  * Individual notification card with:
- * - Category icon
- * - Message
- * - Relative timestamp
+ * - Category icon and color-coded badge
+ * - Message and relative timestamp
  * - Read/unread indicator
- * - Quick actions
+ * - Quick actions (mark as read, dismiss)
+ *
+ * Architecture:
+ * Uses Record<NotificationType, T> maps for icon, label, and color definitions.
+ * This pattern is preferred over switch statements because:
+ * - Single source of truth: icon, label, and color are co-located
+ * - Type-safe: Missing entries for new notification types are compile-time errors
+ * - Extensible: Adding a new notification type only requires adding map entries
+ * - Consistent: Same lookup pattern used for all properties
+ *
+ * Each notification type is fully defined by four maps:
+ * - iconMap: The SVG element to display
+ * - labelMap: The human-readable category label
+ * - badgeColorMap: Tailwind classes for the badge background/text
+ * - iconColorMap: Tailwind classes for the icon color
  */
 export function NotificationItem({
   notification,
@@ -84,7 +97,13 @@ export function NotificationItem({
     </svg>
   )
 
-  // SVG icon components for each notification type
+  /**
+   * SVG icon components for each notification type.
+   * Note: Some types share icons intentionally:
+   * - task_assigned/unassigned both use taskIcon (same entity type, different action)
+   * - sprint_started/completed both use sprintIcon (same entity type, different lifecycle)
+   * The visual distinction comes from the badge color and label text.
+   */
   const iconMap: Record<NotificationType, React.ReactNode> = {
     task_assigned: taskIcon,
     task_unassigned: taskIcon,
