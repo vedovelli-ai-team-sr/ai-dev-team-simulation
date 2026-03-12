@@ -4,11 +4,25 @@ import {
   type UseMutationOptions,
   type UseMutationResult,
 } from '@tanstack/react-query'
-import { useState, useCallback } from 'react'
+import { useState, useCallback, useRef } from 'react'
 
-export interface ConflictState<TData> {
+/**
+ * Custom error class for conflict resolution
+ * Carries serverVersion data without relying on message parsing
+ */
+export class ConflictError extends Error {
+  constructor(
+    public serverVersion: unknown,
+    message = 'Conflict detected during mutation'
+  ) {
+    super(message)
+    this.name = 'ConflictError'
+  }
+}
+
+export interface ConflictState<TData, TVariables> {
   hasConflict: boolean
-  localChanges: unknown
+  localChanges: TVariables
   serverVersion: TData | null
   resolve: (strategy: 'reload' | 'override') => Promise<void>
 }
@@ -31,14 +45,16 @@ interface ConflictLogEntry {
   strategy: 'reload' | 'override'
 }
 
-// Lightweight in-memory conflict log for metrics
+// Lightweight in-memory conflict log for metrics with size limit
 const conflictLog: ConflictLogEntry[] = []
+const MAX_CONFLICT_LOG_SIZE = 1000
 
 export function getConflictMetrics() {
   return {
     totalConflicts: conflictLog.length,
     reloadCount: conflictLog.filter((e) => e.strategy === 'reload').length,
     overrideCount: conflictLog.filter((e) => e.strategy === 'override').length,
+    logSize: conflictLog.length,
   }
 }
 
@@ -46,7 +62,7 @@ export interface UseConflictAwareMutationResult<TData, TVariables>
   extends Omit<UseMutationResult<TData, Error, TVariables>, 'mutate' | 'mutateAsync'> {
   mutate: (variables: TVariables) => void
   mutateAsync: (variables: TVariables) => Promise<TData>
-  conflictState: ConflictState<TData> | null
+  conflictState: ConflictState<TData, TVariables> | null
 }
 
 /**
@@ -73,9 +89,9 @@ export function useConflictAwareMutation<TData, TVariables, TContext = unknown>(
 
   const queryClient = useQueryClient()
   const [retryCount, setRetryCount] = useState(0)
-  const [conflictState, setConflictState] = useState<ConflictState<TData> | null>(null)
+  const [conflictState, setConflictState] = useState<ConflictState<TData, TVariables> | null>(null)
   const [lastVariables, setLastVariables] = useState<TVariables | null>(null)
-  const [localChanges, setLocalChanges] = useState<unknown>(null)
+  const isResolvingRef = useRef(false)
 
   // Exponential backoff calculator
   const getBackoffDelay = (attempt: number) => {
@@ -86,7 +102,6 @@ export function useConflictAwareMutation<TData, TVariables, TContext = unknown>(
     ...mutationOptions,
     mutationFn: async (variables: TVariables) => {
       setLastVariables(variables)
-      setLocalChanges(variables)
 
       try {
         const result = await mutationFn(variables)
@@ -94,69 +109,98 @@ export function useConflictAwareMutation<TData, TVariables, TContext = unknown>(
         setRetryCount(0)
         return result
       } catch (error) {
-        const err = error instanceof Error ? error : new Error(String(error))
+        // Check if this is a ConflictError or 409 response
+        const isConflict =
+          error instanceof ConflictError ||
+          (error instanceof Error && (error.message.includes('409') || error.message.includes('conflict')))
 
-        // Check if this is a 409 Conflict
-        if (err.message.includes('409') || err.message.includes('conflict')) {
-          // Extract server version from error message if available
+        if (isConflict) {
+          // Extract server version from ConflictError or error message
           let serverVersion: TData | null = null
-          try {
-            // Try to parse server version from error message
-            const match = err.message.match(/serverVersion:(.*?)(?:$|,)/)
-            if (match) {
-              serverVersion = JSON.parse(match[1])
-            }
-          } catch {
-            // Ignore parsing errors
+
+          if (error instanceof ConflictError) {
+            serverVersion = error.serverVersion as TData
+          } else {
+            // Fallback for string-based errors (shouldn't happen with proper implementation)
+            console.warn(
+              'Conflict received without ConflictError class. Ensure mutationFn throws ConflictError for 409 responses.'
+            )
           }
 
           // Create conflict state with resolve function
-          const conflict: ConflictState<TData> = {
+          const conflict: ConflictState<TData, TVariables> = {
             hasConflict: true,
             localChanges: variables,
             serverVersion,
             resolve: async (strategy: 'reload' | 'override') => {
-              // Log conflict if enabled
-              if (enableConflictLog && variables && typeof variables === 'object') {
-                const vars = variables as Record<string, any>
-                conflictLog.push({
-                  timestamp: new Date(),
-                  entityType: vars.entityType || 'unknown',
-                  entityId: vars.id || vars.entityId || 'unknown',
-                  strategy,
-                })
+              // Guard against multiple resolve() calls
+              if (isResolvingRef.current) {
+                console.warn('resolve() called multiple times. Ignoring subsequent calls.')
+                return
               }
 
-              if (strategy === 'reload') {
-                // Accept server version - refetch latest data
-                if (queryKeyFn && lastVariables) {
-                  const queryKey = queryKeyFn(lastVariables)
-                  await queryClient.fetchQuery({
-                    queryKey,
-                    queryFn: async () => {
-                      // This will trigger a fresh fetch of the data
-                      // The actual implementation depends on the query setup
-                      return serverVersion
-                    },
-                  })
-                }
-                setConflictState(null)
-              } else if (strategy === 'override') {
-                // Force push local changes - retry with exponential backoff
-                const backoffDelay = getBackoffDelay(retryCount)
-                await new Promise((resolve) => setTimeout(resolve, backoffDelay))
+              isResolvingRef.current = true
 
-                if (retryCount < maxRetries) {
-                  setRetryCount((prev) => prev + 1)
-                  // Re-attempt the mutation
-                  mutation.mutate(variables)
+              try {
+                // Log conflict if enabled
+                if (enableConflictLog && variables && typeof variables === 'object') {
+                  const vars = variables as Record<string, any>
+
+                  // Add to log with size limit
+                  conflictLog.push({
+                    timestamp: new Date(),
+                    entityType: vars.entityType || 'unknown',
+                    entityId: vars.id || vars.entityId || 'unknown',
+                    strategy,
+                  })
+
+                  // Trim log if it exceeds max size
+                  if (conflictLog.length > MAX_CONFLICT_LOG_SIZE) {
+                    conflictLog.splice(0, conflictLog.length - MAX_CONFLICT_LOG_SIZE)
+                  }
                 }
+
+                if (strategy === 'reload') {
+                  // Accept server version - refetch latest data
+                  if (!queryKeyFn) {
+                    console.warn(
+                      'resolve("reload") called but queryKeyFn was not provided to useConflictAwareMutation. ' +
+                        'The UI will not refetch data. Either provide queryKeyFn or use resolve("override") instead.'
+                    )
+                  } else if (lastVariables) {
+                    const queryKey = queryKeyFn(lastVariables)
+                    await queryClient.invalidateQueries({ queryKey })
+                  }
+                  setConflictState(null)
+                } else if (strategy === 'override') {
+                  // Force push local changes - retry with exponential backoff
+                  if (retryCount < maxRetries) {
+                    const backoffDelay = getBackoffDelay(retryCount)
+                    await new Promise((resolve) => setTimeout(resolve, backoffDelay))
+
+                    // Increment retry count before retrying
+                    setRetryCount((prev) => {
+                      const newCount = prev + 1
+                      // Schedule retry after state update
+                      setTimeout(() => {
+                        mutation.mutateAsync(variables).catch(() => {
+                          // Error will be handled in next iteration
+                        })
+                      }, 0)
+                      return newCount
+                    })
+                  } else {
+                    console.warn(`Max retries (${maxRetries}) exceeded. Giving up on override strategy.`)
+                  }
+                }
+              } finally {
+                isResolvingRef.current = false
               }
             },
           }
 
           setConflictState(conflict)
-          throw err
+          throw error
         }
 
         // For non-conflict errors, implement exponential backoff retry
@@ -168,7 +212,7 @@ export function useConflictAwareMutation<TData, TVariables, TContext = unknown>(
           return mutationFn(variables)
         }
 
-        throw err
+        throw error
       }
     },
   })

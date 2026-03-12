@@ -1,6 +1,6 @@
 import { useQueryClient } from '@tanstack/react-query'
 import type { Task, UpdateTaskInput } from '../types/task'
-import { useConflictAwareMutation } from './useConflictAwareMutation'
+import { ConflictError, useConflictAwareMutation } from './useConflictAwareMutation'
 
 export function useUpdateTask() {
   const queryClient = useQueryClient()
@@ -16,7 +16,7 @@ export function useUpdateTask() {
       if (!response.ok) {
         const error = await response.json()
         if (response.status === 409) {
-          throw new Error(`409: conflict with serverVersion: ${JSON.stringify(error.serverVersion || {})}`)
+          throw new ConflictError(error.serverVersion || {}, 'Task was modified by another user')
         }
         throw new Error(error.error || 'Failed to update task')
       }

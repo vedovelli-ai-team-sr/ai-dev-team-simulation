@@ -1,7 +1,7 @@
 import { useQueryClient } from '@tanstack/react-query'
 import type { Sprint } from '../../types/sprint'
 import { sprintKeys } from '../queries/sprints'
-import { useConflictAwareMutation } from '../useConflictAwareMutation'
+import { ConflictError, useConflictAwareMutation } from '../useConflictAwareMutation'
 
 /**
  * Input type for updating a sprint
@@ -39,7 +39,7 @@ export const useUpdateSprint = (sprintId: string) => {
       if (!response.ok) {
         const error = await response.json() as { error?: string; serverVersion?: Sprint }
         if (response.status === 409) {
-          throw new Error(`409: conflict with serverVersion: ${JSON.stringify(error.serverVersion || {})}`)
+          throw new ConflictError(error.serverVersion || {}, 'Sprint was modified by another user')
         }
         throw new Error(error.error || 'Failed to update sprint')
       }
@@ -61,45 +61,38 @@ export const useUpdateSprint = (sprintId: string) => {
       })
 
       // Create optimistic update - use list data if detail not cached
-      let optimisticSprint: Sprint
+      let optimisticSprint: Sprint | null = null
+
       if (previousDetail) {
         optimisticSprint = { ...previousDetail, ...data, version: (previousDetail.version || 1) + 1 }
       } else {
         // Find sprint in list cache as fallback
-        let foundInList: Sprint | undefined
         previousLists.forEach(([, listData]) => {
-          if (listData && !foundInList) {
-            foundInList = listData.find((s) => s.id === sprintId)
+          if (listData && !optimisticSprint) {
+            const found = listData.find((s) => s.id === sprintId)
+            if (found) {
+              optimisticSprint = { ...found, ...data, version: (found.version || 1) + 1 }
+            }
           }
         })
-
-        if (foundInList) {
-          optimisticSprint = { ...foundInList, ...data, version: (foundInList.version || 1) + 1 }
-        } else {
-          // Last resort: create minimal object (shouldn't happen in normal flow)
-          optimisticSprint = {
-            id: sprintId,
-            ...data,
-            tasks: [],
-            taskCount: 0,
-            completedCount: 0,
-            version: 1,
-            createdAt: new Date().toISOString(),
-          } as Sprint
-        }
       }
 
-      // Update detail cache
-      queryClient.setQueryData(sprintKeys.detail(sprintId), optimisticSprint)
+      // If no cached data found, we can't do optimistic update
+      // This is rare and indicates the sprint wasn't loaded yet
+      // Don't create incomplete objects - let the response handle it
+      if (optimisticSprint) {
+        // Update detail cache
+        queryClient.setQueryData(sprintKeys.detail(sprintId), optimisticSprint)
 
-      // Update list caches
-      previousLists.forEach(([key]) => {
-        queryClient.setQueryData(key, (oldData: Sprint[] = []) =>
-          oldData.map((sprint) =>
-            sprint.id === sprintId ? optimisticSprint : sprint
+        // Update list caches
+        previousLists.forEach(([key]) => {
+          queryClient.setQueryData(key, (oldData: Sprint[] = []) =>
+            oldData.map((sprint) =>
+              sprint.id === sprintId ? optimisticSprint : sprint
+            )
           )
-        )
-      })
+        })
+      }
 
       return { previousDetail, previousLists, optimisticSprint }
     },
