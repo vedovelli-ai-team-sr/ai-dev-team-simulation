@@ -1,52 +1,88 @@
 import { http, HttpResponse } from 'msw'
-import type { Notification, NotificationType } from '../../types/notification'
+import type { Notification, NotificationEventType } from '../../types/notification'
 
 /**
- * Generate realistic notification data with various types
- * Includes agent events, sprint updates, and performance alerts
+ * Generate realistic notification data with event types
+ * Includes: assignment_changed, sprint_updated, task_reassigned, deadline_approaching
+ * Also supports legacy types: agent_event, sprint_change, performance_alert
  */
 function generateMockNotifications(): Notification[] {
-  const agentEvents = [
-    'Agent Alice completed task: Implement authentication module',
-    'Agent Bob started working on: Database optimization',
-    'Agent Charlie submitted code for review: API endpoint refactoring',
-    'Agent Diana completed sprint story: User profile page',
+  const assignmentChangedMessages = [
+    { msg: 'Task "Implement authentication module" assigned to Agent Alice', eventType: 'assignment_changed' as const, agentId: 'agent-1' },
+    { msg: 'Task "Fix database connection pool" reassigned from Bob to Charlie', eventType: 'assignment_changed' as const, agentId: 'agent-3' },
   ]
 
-  const sprintUpdates = [
-    'Sprint 5 velocity updated: 34 points completed',
-    'Sprint backlog refinement scheduled for tomorrow',
-    'Sprint 4 completed with 92% on-time delivery',
-    'New sprint 6 goals approved by team',
+  const sprintUpdatedMessages = [
+    { msg: 'Sprint 5 status changed: Story points velocity updated to 34', eventType: 'sprint_updated' as const, sprintId: 'sprint-5' },
+    { msg: 'Sprint 6 backlog refinement scheduled for tomorrow at 2 PM', eventType: 'sprint_updated' as const, sprintId: 'sprint-6' },
   ]
 
-  const performanceAlerts = [
-    'Agent performance: Bob completed 8/10 tasks on time',
-    'Team velocity trending upward: +12% this week',
-    'Sprint burndown on track: 85% of sprint capacity used',
-    'Code review quality: High complexity PR detected',
+  const taskReassignedMessages = [
+    { msg: 'Task reassigned: "API endpoint refactoring" moved from Alice to Diana', eventType: 'task_reassigned' as const, taskId: 'task-123' },
+    { msg: 'Task reassigned: "User profile page" reassigned to Agent Bob', eventType: 'task_reassigned' as const, taskId: 'task-456' },
+  ]
+
+  const deadlineApproachingMessages = [
+    { msg: 'Deadline approaching: "Complete core features" due in 2 days', eventType: 'deadline_approaching' as const, taskId: 'task-789', priority: 'high' as const },
+    { msg: 'Deadline approaching: "Documentation review" due in 1 day', eventType: 'deadline_approaching' as const, taskId: 'task-101', priority: 'high' as const },
+  ]
+
+  // Legacy notification types for backward compatibility
+  const legacyAgentEvents = [
+    { msg: 'Agent Alice completed task: Implement authentication module', type: 'agent_event' as const },
+    { msg: 'Agent Bob started working on: Database optimization', type: 'agent_event' as const },
+  ]
+
+  const legacySprintUpdates = [
+    { msg: 'Sprint 4 completed with 92% on-time delivery', type: 'sprint_change' as const },
+    { msg: 'New sprint 6 goals approved by team', type: 'sprint_change' as const },
   ]
 
   const notifications: Notification[] = []
   const now = new Date()
+  let notifIndex = 1
 
-  // Generate mix of notification types
-  const allMessages = [
-    ...agentEvents.map((msg, idx) => ({ type: 'agent_event' as const, msg, idx })),
-    ...sprintUpdates.map((msg, idx) => ({ type: 'sprint_change' as const, msg, idx })),
-    ...performanceAlerts.map((msg, idx) => ({ type: 'performance_alert' as const, msg, idx })),
+  // Add structured event notifications
+  const allStructuredMessages = [
+    ...assignmentChangedMessages,
+    ...sprintUpdatedMessages,
+    ...taskReassignedMessages,
+    ...deadlineApproachingMessages,
   ]
 
-  allMessages.forEach((item, idx) => {
+  allStructuredMessages.forEach((item, idx) => {
     notifications.push({
-      id: `notif-${idx + 1}`,
-      type: item.type,
+      id: `notif-${notifIndex++}`,
+      type: item.eventType,
+      eventType: item.eventType,
       message: item.msg,
-      timestamp: new Date(now.getTime() - (idx * 5 * 60 * 1000)).toISOString(), // 5 min intervals
-      read: idx > 3, // First 4 are unread
+      timestamp: new Date(now.getTime() - (idx * 10 * 60 * 1000)).toISOString(), // 10 min intervals
+      read: idx > 1, // First 2 are unread
+      priority: item.priority || 'normal',
+      relatedId: (item as any).agentId || (item as any).sprintId || (item as any).taskId,
       metadata: {
         source: 'system',
-        priority: item.type === 'performance_alert' ? 'high' : 'normal',
+        eventType: item.eventType,
+      },
+    })
+  })
+
+  // Add legacy notifications for backward compatibility
+  const allLegacyMessages = [
+    ...legacyAgentEvents,
+    ...legacySprintUpdates,
+  ]
+
+  allLegacyMessages.forEach((item, idx) => {
+    notifications.push({
+      id: `notif-${notifIndex++}`,
+      type: item.type,
+      message: item.msg,
+      timestamp: new Date(now.getTime() - ((allStructuredMessages.length + idx) * 10 * 60 * 1000)).toISOString(),
+      read: idx > 1,
+      metadata: {
+        source: 'system',
+        priority: 'normal',
       },
     })
   })
@@ -66,8 +102,9 @@ const webSocketClients = new Set<string>()
 export const notificationHandlers = [
   /**
    * GET /api/notifications
-   * Fetch notifications with optional filtering by type and unread status
-   * Supports pagination
+   * Fetch notifications with optional filtering by unread status and type
+   * Returns paginated results capped at 20 most recent entries
+   * Supports filtering by ?unread=true
    */
   http.get('/api/notifications', ({ request }) => {
     const url = new URL(request.url)
@@ -83,26 +120,29 @@ export const notificationHandlers = [
       filtered = filtered.filter((n) => !n.read)
     }
 
-    // Filter by type
+    // Filter by type (supports both eventType and legacy type)
     if (type) {
-      filtered = filtered.filter((n) => n.type === type)
+      filtered = filtered.filter((n) => n.type === type || n.eventType === type)
     }
 
     // Sort by timestamp (newest first)
     filtered.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())
 
-    // Count unread
+    // Count unread from all notifications
     const unreadCount = notificationsStore.filter((n) => !n.read).length
 
-    // Pagination
+    // Cap at 20 most recent entries
+    const capped = filtered.slice(0, 20)
+
+    // Apply pagination
     const start = pageIndex * pageSize
     const end = start + pageSize
-    const paginated = filtered.slice(start, end)
+    const paginated = capped.slice(start, end)
 
     return HttpResponse.json({
-      data: paginated,
-      total: filtered.length,
+      notifications: paginated,
       unreadCount,
+      total: capped.length,
     })
   }),
 
