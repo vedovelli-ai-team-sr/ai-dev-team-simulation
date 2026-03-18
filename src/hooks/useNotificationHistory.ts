@@ -53,6 +53,8 @@ export interface UseNotificationHistoryOptions {
   limit?: number
   /** Filters to apply to history query */
   filters?: NotificationHistoryFilters
+  /** Cursor for pagination (null for first page) */
+  cursor?: string | null
   /** Stale time in milliseconds (default: 5min) */
   staleTime?: number
   /** GC time in milliseconds (default: 10min) */
@@ -99,10 +101,53 @@ export const notificationHistoryQueryKeys = {
  *   },
  * })
  */
-export function useNotificationHistory(options: UseNotificationHistoryOptions = {}) {
+/**
+ * Build query parameters for notification history request
+ */
+function buildHistoryParams(
+  limit: number,
+  cursor: string | null | undefined,
+  filters: NotificationHistoryFilters
+): URLSearchParams {
+  const params = new URLSearchParams()
+  params.append('limit', limit.toString())
+
+  if (cursor) {
+    params.append('cursor', cursor)
+  }
+
+  if (filters.type) {
+    params.append('type', filters.type)
+  }
+  if (filters.status && filters.status !== 'all') {
+    params.append('status', filters.status)
+  }
+  if (filters.startDate) {
+    params.append('startDate', filters.startDate)
+  }
+  if (filters.endDate) {
+    params.append('endDate', filters.endDate)
+  }
+
+  return params
+}
+
+export interface UseNotificationHistoryReturn {
+  items: NotificationHistoryEntry[]
+  pagination: NotificationHistoryPaginationMeta
+  totalCount: number
+  unreadCount: number
+  isLoading: boolean
+  error: Error | null
+  invalidateHistory: () => Promise<void>
+  fetchPage: (cursor: string | null) => Promise<NotificationHistoryResponse>
+}
+
+export function useNotificationHistory(options: UseNotificationHistoryOptions = {}): UseNotificationHistoryReturn {
   const {
     limit = 20,
     filters = {},
+    cursor = null,
     staleTime = 5 * 60 * 1000, // 5 minutes
     gcTime = 10 * 60 * 1000, // 10 minutes
     refetchOnWindowFocus = true,
@@ -110,29 +155,13 @@ export function useNotificationHistory(options: UseNotificationHistoryOptions = 
 
   const queryClient = useQueryClient()
 
-  // Build query key with filters
-  const queryKey = notificationHistoryQueryKeys.list(filters)
+  // Build query key with filters and cursor for proper cache management
+  const queryKey = notificationHistoryQueryKeys.cursor(filters, cursor)
 
   const query = useQuery<NotificationHistoryResponse, Error>({
     queryKey,
     queryFn: async () => {
-      const params = new URLSearchParams()
-      params.append('limit', limit.toString())
-
-      // Add filter parameters
-      if (filters.type) {
-        params.append('type', filters.type)
-      }
-      if (filters.status && filters.status !== 'all') {
-        params.append('status', filters.status)
-      }
-      if (filters.startDate) {
-        params.append('startDate', filters.startDate)
-      }
-      if (filters.endDate) {
-        params.append('endDate', filters.endDate)
-      }
-
+      const params = buildHistoryParams(limit, cursor, filters)
       const response = await fetch(`/api/notifications/history?${params}`, {
         headers: { 'Content-Type': 'application/json' },
       })
@@ -167,27 +196,7 @@ export function useNotificationHistory(options: UseNotificationHistoryOptions = 
    * Fetch specific page using cursor
    */
   const fetchPage = async (cursor: string | null) => {
-    const params = new URLSearchParams()
-    params.append('limit', limit.toString())
-
-    if (cursor) {
-      params.append('cursor', cursor)
-    }
-
-    // Add filter parameters
-    if (filters.type) {
-      params.append('type', filters.type)
-    }
-    if (filters.status && filters.status !== 'all') {
-      params.append('status', filters.status)
-    }
-    if (filters.startDate) {
-      params.append('startDate', filters.startDate)
-    }
-    if (filters.endDate) {
-      params.append('endDate', filters.endDate)
-    }
-
+    const params = buildHistoryParams(limit, cursor, filters)
     const response = await fetch(`/api/notifications/history?${params}`, {
       headers: { 'Content-Type': 'application/json' },
     })
@@ -202,10 +211,6 @@ export function useNotificationHistory(options: UseNotificationHistoryOptions = 
   }
 
   return {
-    // Query state
-    ...query,
-
-    // Computed values
     items: query.data?.items ?? [],
     pagination: query.data?.pagination ?? {
       cursor: null,
@@ -215,13 +220,10 @@ export function useNotificationHistory(options: UseNotificationHistoryOptions = 
     },
     totalCount: query.data?.totalCount ?? 0,
     unreadCount: query.data?.unreadCount ?? 0,
-
-    // Actions
+    isLoading: query.isLoading,
+    error: query.error,
     invalidateHistory,
     fetchPage,
   }
 }
 
-export type UseNotificationHistoryReturn = ReturnType<
-  typeof useNotificationHistory
->
